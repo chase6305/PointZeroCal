@@ -1,0 +1,37 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "point-zero-cal"
+version = "0.1.0"
+description = "Pinocchio-based joint zero-offset calibration"
+readme = "README.md"
+requires-python = ">=3.10"
+keywords = ["robotics", "calibration", "pinocchio", "kinematics"]
+classifiers = [
+  "Development Status :: 3 - Alpha",
+  "Programming Language :: Python :: 3",
+  "Programming Language :: Python :: 3.10",
+  "Topic :: Scientific/Engineering",
+]
+dependencies = [
+  "numpy>=1.24",
+  "pin>=2.7",
+]
+
+[project.optional-dependencies]
+test = ["pytest>=7"]
+simulation = ["viser[urdf]>=1.1"]
+
+[project.scripts]
+point-zero-cal = "point_zero_cal.cli:main"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+
+[tool.setuptools.packages.find]
+include = ["point_zero_cal*"]
+
+[tool.setuptools.package-data]
+point_zero_cal = ["py.typed"]

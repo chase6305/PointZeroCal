@@ -117,7 +117,10 @@ class JointZeroCalibrator:
             raise ValueError("at least one joint must remain calibratable")
 
         step_norm = float("inf")
-        initial_positions, _ = self._evaluate(q)
+        # The baseline must use the caller's seed as well. Otherwise a warm
+        # start reports an "initial" RMS for a different state than the one
+        # from which optimization actually begins.
+        initial_positions, _ = self._evaluate(q + offsets)
         initial_point_rms = self._point_rms(initial_positions)
 
         for iteration in range(1, self.max_iterations + 1):

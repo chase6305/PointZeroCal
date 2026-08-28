@@ -4,6 +4,21 @@
 
 PointZeroCal is a general-purpose joint zero-offset calibration library built on [Pinocchio](https://github.com/stack-of-tasks/pinocchio). It estimates encoder zero offsets from robot configurations in which the tool center point (TCP) touches the same fixed point.
 
+![PointZeroCal overview](docs/assets/point-zero-cal-overview.png)
+
+## Why PointZeroCal
+
+- **Backend-independent solver:** use the included Pinocchio adapter or provide a small position-and-Jacobian interface.
+- **Observability diagnostics:** effective rank, singular values, condition number, and active-joint reporting make underconstrained setups explicit.
+- **Practical interfaces:** typed Python API, strict JSON CLI output, degree/radian input, fixed-joint selection, and optional TCP transforms.
+- **Reproducible validation:** deterministic analytical tests and an end-to-end UR10 simulation with axial and eccentric TCP cases.
+
+## Calibration principle
+
+Collect diverse robot configurations while the TCP touches one physical point. The solver iteratively finds a shared joint-offset vector that minimizes the centered TCP position residual. A reference joint must remain fixed because fixed-point position measurements cannot identify a global base rotation.
+
+![Fixed-point contact calibration principle](docs/assets/fixed-point-calibration.png)
+
 ## Installation
 
 ```bash
@@ -11,6 +26,15 @@ python -m pip install -e .
 # Development and tests
 python -m pip install -e '.[test]'
 pytest
+```
+
+## Quick start
+
+Run the bundled UR10 example without starting the viewer:
+
+```bash
+python -m pip install -e '.[simulation,test]'
+python examples/ur10_calibration_demo.py --no-viewer
 ```
 
 ## Data requirements

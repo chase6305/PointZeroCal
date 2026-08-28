@@ -29,6 +29,8 @@ point-zero-cal = "point_zero_cal.cli:main"
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+pythonpath = ["."]
+addopts = "--strict-markers --strict-config"
 
 [tool.setuptools.packages.find]
 include = ["point_zero_cal*"]

@@ -57,6 +57,23 @@ def test_accepts_degrees_and_fixed_joint_names():
     assert result.offsets_rad[0] == 0.0
 
 
+def test_initial_rms_is_measured_from_initial_offset_seed():
+    samples = np.array([[0.0, np.pi / 2], [np.pi / 2, -np.pi / 2]])
+    seed = np.array([0.0, -0.01])
+    arm = PlanarArm()
+    seeded_positions = np.vstack(
+        [arm.position_and_jacobian(q + seed)[0] for q in samples]
+    )
+    centered = seeded_positions - seeded_positions.mean(axis=0)
+    expected_rms = np.sqrt(np.mean(np.sum(centered**2, axis=1)))
+
+    result = JointZeroCalibrator(arm).calibrate(
+        samples, initial_offsets=seed
+    )
+
+    assert result.initial_point_rms == pytest.approx(expected_rms)
+
+
 def test_rank_deficient_problem_does_not_report_convergence():
     samples = np.array([[0.0, np.pi / 2], [np.pi / 2, -np.pi / 2]])
     result = JointZeroCalibrator(PlanarArm(), max_iterations=3).calibrate(

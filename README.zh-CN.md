@@ -4,6 +4,21 @@
 
 PointZeroCal 是基于 [Pinocchio](https://github.com/stack-of-tasks/pinocchio) 的通用机器人关节零位偏差标定库。它利用多组“工具中心点（TCP）接触同一固定点”时的关节角，通过末端平移雅可比迭代估计编码器零偏。
 
+![PointZeroCal 项目概览](docs/assets/point-zero-cal-overview.png)
+
+## 为什么选择 PointZeroCal
+
+- **求解器与后端解耦：** 可直接使用 Pinocchio 适配器，也可实现精简的位置与雅可比接口。
+- **可观性诊断完整：** 输出有效秩、奇异值、条件数和活动关节，明确提示欠约束标定。
+- **工程接口实用：** 提供类型标注 Python API、严格 JSON CLI 输出、角度/弧度输入、固定关节和 TCP 变换。
+- **验证可复现：** 包含确定性的解析模型测试，以及覆盖轴向/偏心 TCP 的 UR10 端到端仿真。
+
+## 标定原理
+
+采集多组 TCP 接触同一物理点时的分散机器人姿态。求解器迭代估计一组共享关节零偏，使修正后的 TCP 位置相对于共同质心的残差最小。同点位置测量无法辨识整体基座旋转，因此必须固定一个参考关节。
+
+![固定点接触标定原理](docs/assets/fixed-point-calibration.png)
+
 ## 安装
 
 ```bash
@@ -11,6 +26,15 @@ python -m pip install -e .
 # 开发与测试
 python -m pip install -e '.[test]'
 pytest
+```
+
+## 快速开始
+
+无需启动可视化界面即可运行仓库内置的 UR10 示例：
+
+```bash
+python -m pip install -e '.[simulation,test]'
+python examples/ur10_calibration_demo.py --no-viewer
 ```
 
 ## 数据要求

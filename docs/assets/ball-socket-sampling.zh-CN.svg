@@ -1,0 +1,43 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="560" viewBox="0 0 1200 560" role="img" aria-labelledby="title desc">
+<title id="title">球头与双球窝：如何采集同点姿态</title><desc id="desc">理想配合的剖面示意 · TCP 定义为球心 · 图形未按比例绘制</desc>
+<defs><marker id="arrow" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse"><path d="M0 0 L10 5 L0 10 Z" fill="#53657d"/></marker></defs>
+<g font-family="Noto Sans CJK SC, Noto Sans CJK JP, Arial, sans-serif">
+<rect width="1200" height="560" rx="20" fill="#f8fafc"/>
+<text x="32" y="46" font-size="28" fill="#172b4d" font-weight="700" text-anchor="start">球头与双球窝：如何采集同点姿态</text>
+<text x="32" y="78" font-size="17" fill="#53657d" font-weight="400" text-anchor="start">理想配合的剖面示意 · TCP 定义为球心 · 图形未按比例绘制</text>
+<rect x="24" y="105" width="552" height="429" rx="16" fill="white" stroke="#dbe4ee"/>
+<rect x="596" y="105" width="580" height="429" rx="16" fill="white" stroke="#dbe4ee"/>
+<text x="48" y="144" font-size="22" fill="#172b4d" font-weight="700" text-anchor="start">01  固定球心，改变末端姿态</text>
+<line x1="285" y1="330" x2="160" y2="202" stroke="#087f8c" stroke-width="12" stroke-linecap="round" stroke-dasharray="7 6"/>
+<text x="160" y="182" font-size="20" fill="#087f8c" font-weight="700" text-anchor="middle">q1</text>
+<line x1="285" y1="330" x2="285" y2="190" stroke="#2563eb" stroke-width="12" stroke-linecap="round"/>
+<text x="285" y="170" font-size="20" fill="#2563eb" font-weight="700" text-anchor="middle">q2</text>
+<line x1="285" y1="330" x2="411" y2="202" stroke="#7451b8" stroke-width="12" stroke-linecap="round" stroke-dasharray="7 6"/>
+<text x="411" y="182" font-size="20" fill="#7451b8" font-weight="700" text-anchor="middle">q3</text>
+<path d="M85 330 H237 C237 356.5104 258.4896 378 285 378 C311.5104 378 333 356.5104 333 330 H495 V422 H85 Z" fill="#e5ecf4" stroke="#94a3b8" stroke-width="2"/>
+<circle cx="285" cy="330" r="44" fill="#dbeafe" stroke="#2563eb" stroke-width="3"/>
+<circle cx="285" cy="330" r="5" fill="#2563eb" stroke="white" stroke-width="2"/>
+<line x1="276" y1="330" x2="294" y2="330" stroke="#2563eb" stroke-width="2" stroke-linecap="round"/>
+<line x1="285" y1="321" x2="285" y2="339" stroke="#2563eb" stroke-width="2" stroke-linecap="round"/>
+<line x1="298" y1="330" x2="364" y2="309" stroke="#2563eb" stroke-width="2" stroke-linecap="round"/>
+<text x="368" y="309" font-size="18" fill="#2563eb" font-weight="700" text-anchor="start">TCP = 球心</text>
+<text x="110" y="397" font-size="17" fill="#53657d" font-weight="400" text-anchor="start">固定球窝 / 工装</text>
+<text x="48" y="462" font-size="18" fill="#172b4d" font-weight="400" text-anchor="start">稳定落座后，记录一整行关节角。</text>
+<text x="48" y="499" font-size="17" fill="#53657d" font-weight="400" text-anchor="start">改变姿态，保持同一球心位置。</text>
+<text x="620" y="144" font-size="22" fill="#172b4d" font-weight="700" text-anchor="start">02  同一球头，依次采集两个球窝</text>
+<text x="620" y="177" font-size="17" fill="#53657d" font-weight="400" text-anchor="start">每个球窝保存独立样本组。</text>
+<path d="M635 308 H717 C717 329.5397 734.4603 347 756 347 C777.5397 347 795 329.5397 795 308 H975 C975 329.5397 992.4603 347 1014 347 C1035.5397 347 1053 329.5397 1053 308 H1137 V390 H635 Z" fill="#e5ecf4" stroke="#94a3b8" stroke-width="2"/>
+<line x1="756" y1="308" x2="756" y2="224" stroke="#2563eb" stroke-width="10" stroke-linecap="round"/>
+<circle cx="756" cy="308" r="35" fill="#eff6ff" stroke="#2563eb" stroke-width="3"/>
+<circle cx="756" cy="308" r="4" fill="#2563eb" stroke="white" stroke-width="2"/>
+<line x1="756" y1="354" x2="756" y2="442" stroke="#53657d" stroke-width="1" stroke-linecap="round" stroke-dasharray="7 6"/>
+<line x1="1014" y1="308" x2="1014" y2="224" stroke="#c26a16" stroke-width="10" stroke-linecap="round" stroke-dasharray="7 6"/>
+<circle cx="1014" cy="308" r="35" fill="white" stroke="#c26a16" stroke-width="3" stroke-dasharray="6 5"/>
+<circle cx="1014" cy="308" r="4" fill="#c26a16" stroke="white" stroke-width="2"/>
+<line x1="1014" y1="354" x2="1014" y2="442" stroke="#53657d" stroke-width="1" stroke-linecap="round" stroke-dasharray="7 6"/>
+<text x="756" y="373" font-size="18" fill="#2563eb" font-weight="700" text-anchor="middle">front/0</text>
+<text x="1014" y="373" font-size="18" fill="#c26a16" font-weight="700" text-anchor="middle">front/1</text>
+<line x1="756" y1="431" x2="1014" y2="431" stroke="#53657d" stroke-width="2" stroke-linecap="round" marker-end="url(#arrow)" marker-start="url(#arrow)"/>
+<text x="885" y="467" font-size="19" fill="#172b4d" font-weight="700" text-anchor="middle">d = 实测球心间距</text>
+<text x="885" y="502" font-size="17" fill="#53657d" font-weight="400" text-anchor="middle">50 mm 仅为仓库仿真示例值</text>
+</g></svg>

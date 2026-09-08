@@ -1,0 +1,49 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="460" viewBox="0 0 1200 460" role="img" aria-labelledby="title desc">
+<title id="title">Contact groups → shared offsets → held-out validation</title><desc id="desc">Create new groups when the fixture moves; evaluate validation data at fixed offsets.</desc>
+<defs><marker id="arrow" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse"><path d="M0 0 L10 5 L0 10 Z" fill="#53657d"/></marker></defs>
+<g font-family="Noto Sans CJK SC, Noto Sans CJK JP, Arial, sans-serif">
+<rect width="1200" height="460" rx="20" fill="#f8fafc"/>
+<text x="32" y="46" font-size="28" fill="#172b4d" font-weight="700" text-anchor="start">Contact groups → shared offsets → held-out validation</text>
+<text x="32" y="78" font-size="17" fill="#53657d" font-weight="400" text-anchor="start">Create new groups when the fixture moves; evaluate validation data at fixed offsets.</text>
+<rect x="24" y="112" width="384" height="280" rx="16" fill="white" stroke="#dbe4ee"/>
+<rect x="448" y="112" width="280" height="280" rx="16" fill="white" stroke="#dbe4ee"/>
+<rect x="768" y="112" width="408" height="280" rx="16" fill="white" stroke="#dbe4ee"/>
+<text x="48" y="151" font-size="22" fill="#172b4d" font-weight="700" text-anchor="start">Placement A · training</text>
+<text x="792" y="151" font-size="22" fill="#172b4d" font-weight="700" text-anchor="start">Placement B · validation</text>
+<rect x="56" y="185" width="140" height="122" rx="12" fill="#f8fafc" stroke="#dbe4ee"/>
+<line x1="126" y1="238" x2="91" y2="207" stroke="#2563eb" stroke-width="3" stroke-linecap="round"/>
+<line x1="126" y1="238" x2="126" y2="207" stroke="#2563eb" stroke-width="3" stroke-linecap="round"/>
+<line x1="126" y1="238" x2="161" y2="207" stroke="#2563eb" stroke-width="3" stroke-linecap="round"/>
+<circle cx="126" cy="238" r="10" fill="white" stroke="#2563eb" stroke-width="3"/>
+<text x="126" y="286" font-size="19" fill="#2563eb" font-weight="700" text-anchor="middle">front/0</text>
+<rect x="232" y="185" width="140" height="122" rx="12" fill="#f8fafc" stroke="#dbe4ee"/>
+<line x1="302" y1="238" x2="267" y2="207" stroke="#c26a16" stroke-width="3" stroke-linecap="round"/>
+<line x1="302" y1="238" x2="302" y2="207" stroke="#c26a16" stroke-width="3" stroke-linecap="round"/>
+<line x1="302" y1="238" x2="337" y2="207" stroke="#c26a16" stroke-width="3" stroke-linecap="round"/>
+<circle cx="302" cy="238" r="10" fill="white" stroke="#c26a16" stroke-width="3"/>
+<text x="302" y="286" font-size="19" fill="#c26a16" font-weight="700" text-anchor="middle">front/1</text>
+<rect x="808" y="185" width="140" height="122" rx="12" fill="#f8fafc" stroke="#dbe4ee"/>
+<line x1="878" y1="238" x2="843" y2="207" stroke="#087f8c" stroke-width="3" stroke-linecap="round"/>
+<line x1="878" y1="238" x2="878" y2="207" stroke="#087f8c" stroke-width="3" stroke-linecap="round"/>
+<line x1="878" y1="238" x2="913" y2="207" stroke="#087f8c" stroke-width="3" stroke-linecap="round"/>
+<circle cx="878" cy="238" r="10" fill="white" stroke="#087f8c" stroke-width="3"/>
+<text x="878" y="286" font-size="19" fill="#087f8c" font-weight="700" text-anchor="middle">left/0</text>
+<rect x="990" y="185" width="140" height="122" rx="12" fill="#f8fafc" stroke="#dbe4ee"/>
+<line x1="1060" y1="238" x2="1025" y2="207" stroke="#7451b8" stroke-width="3" stroke-linecap="round"/>
+<line x1="1060" y1="238" x2="1060" y2="207" stroke="#7451b8" stroke-width="3" stroke-linecap="round"/>
+<line x1="1060" y1="238" x2="1095" y2="207" stroke="#7451b8" stroke-width="3" stroke-linecap="round"/>
+<circle cx="1060" cy="238" r="10" fill="white" stroke="#7451b8" stroke-width="3"/>
+<text x="1060" y="286" font-size="19" fill="#7451b8" font-weight="700" text-anchor="middle">left/1</text>
+<text x="216" y="341" font-size="18" fill="#172b4d" font-weight="400" text-anchor="middle">One centroid per group</text>
+<text x="216" y="371" font-size="16" fill="#53657d" font-weight="400" text-anchor="middle">Optional: known spacing d</text>
+<text x="588" y="176" font-size="22" fill="#172b4d" font-weight="700" text-anchor="middle">Joint fit</text>
+<text x="588" y="223" font-size="19" fill="#2563eb" font-weight="400" text-anchor="middle">calibrate_groups</text>
+<text x="588" y="276" font-size="36" fill="#2563eb" font-weight="700" text-anchor="middle">δq</text>
+<text x="588" y="319" font-size="17" fill="#172b4d" font-weight="400" text-anchor="middle">One shared offset vector</text>
+<text x="588" y="357" font-size="15" fill="#53657d" font-weight="400" text-anchor="middle">Fix reference joints; check rank</text>
+<text x="972" y="341" font-size="17" fill="#087f8c" font-weight="400" text-anchor="middle">evaluate_groups(offsets_rad=δq)</text>
+<text x="972" y="371" font-size="16" fill="#53657d" font-weight="400" text-anchor="middle">Check errors; keep offsets fixed</text>
+<line x1="414" y1="252" x2="438" y2="252" stroke="#53657d" stroke-width="3" stroke-linecap="round" marker-end="url(#arrow)"/>
+<line x1="734" y1="252" x2="758" y2="252" stroke="#53657d" stroke-width="3" stroke-linecap="round" marker-end="url(#arrow)"/>
+<text x="32" y="433" font-size="17" fill="#53657d" font-weight="400" text-anchor="start">Example exports: front_0_rad.csv, front_1_rad.csv, left_0_rad.csv, left_1_rad.csv</text>
+</g></svg>

@@ -23,6 +23,7 @@ dependencies = [
 [project.optional-dependencies]
 test = ["pytest>=7"]
 simulation = ["viser[urdf]>=1.1"]
+docs = ["matplotlib>=3.7"]
 
 [project.scripts]
 point-zero-cal = "point_zero_cal.cli:main"

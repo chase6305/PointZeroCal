@@ -9,12 +9,12 @@ from pathlib import Path
 import numpy as np
 
 from point_zero_cal import CalibrationResult, JointZeroCalibrator, PinocchioKinematics
+from point_zero_cal._io import write_text_atomic
 from point_zero_cal.simulation import (
     FixedPointDataset,
     generate_fixed_point_dataset,
     make_rpy_samples,
 )
-
 
 ROOT = Path(__file__).resolve().parents[1]
 URDF = ROOT / "assets/UR10/UR10.urdf"
@@ -35,14 +35,6 @@ class DemoCase:
     measured_rad: np.ndarray
     raw_point_rms: float
     corrected_point_rms: float
-
-
-def point_rms(backend: PinocchioKinematics, configurations: np.ndarray) -> float:
-    positions = np.vstack(
-        [backend.position_and_jacobian(configuration)[0] for configuration in configurations]
-    )
-    center = positions.mean(axis=0)
-    return float(np.sqrt(np.mean(np.sum((positions - center) ** 2, axis=1))))
 
 
 def build_cases(rpy_deltas: np.ndarray) -> dict[str, DemoCase]:
@@ -67,7 +59,6 @@ def build_cases(rpy_deltas: np.ndarray) -> dict[str, DemoCase]:
         injected_deg = np.asarray(injected)
         measured = dataset.configurations_rad - np.deg2rad(injected_deg)
         result = JointZeroCalibrator(backend).calibrate(measured, fixed_joints=fixed)
-        corrected = measured + result.offsets_rad
         cases[name] = DemoCase(
             name,
             tcp_xyz,
@@ -77,8 +68,8 @@ def build_cases(rpy_deltas: np.ndarray) -> dict[str, DemoCase]:
             injected_deg,
             result,
             measured,
-            point_rms(backend, measured),
-            point_rms(backend, corrected),
+            result.initial_point_rms,
+            result.corrected_point_rms,
         )
     return cases
 
@@ -134,11 +125,19 @@ def print_cases(cases: dict[str, DemoCase]) -> None:
         print("\nCalibration quality")
         print(f"Status       : {status} - {case.result.message}")
         print(f"Iterations   : {case.result.iterations}")
-        print(f"Point RMS    : {case.raw_point_rms * 1e3:.6f} mm -> "
-              f"{case.corrected_point_rms * 1e3:.3e} mm")
+        print(
+            f"Point RMS    : {case.raw_point_rms * 1e3:.6f} mm -> "
+            f"{case.corrected_point_rms * 1e3:.3e} mm"
+        )
         print(f"Improvement  : {improvement:.3e}x")
         print(f"Rank         : {case.result.rank}/{expected_rank}")
         print(f"Condition no.: {case.result.condition_number:.6f}")
+        diagnostics = case.result.sample_diagnostics
+        if diagnostics is not None:
+            print(
+                f"Max residual : {diagnostics.max_corrected_point_error * 1e3:.3e} mm "
+                f"(sample {diagnostics.worst_sample_index + 1})"
+            )
     print("\n" + "=" * 78)
 
 
@@ -146,7 +145,11 @@ def export_cases(cases: dict[str, DemoCase], output_dir: Path) -> None:
     output_dir.mkdir(parents=True, exist_ok=True)
     for index, case in enumerate(cases.values(), start=1):
         stem = "axial_tcp" if index == 1 else "eccentric_tcp"
-        np.savetxt(output_dir / f"{stem}_measured_deg.csv", np.rad2deg(case.measured_rad), delimiter=",")
+        np.savetxt(
+            output_dir / f"{stem}_measured_deg.csv",
+            np.rad2deg(case.measured_rad),
+            delimiter=",",
+        )
         payload = {
             "case": case.name,
             "tcp_xyz_m": case.tcp_xyz,
@@ -161,44 +164,66 @@ def export_cases(cases: dict[str, DemoCase], output_dir: Path) -> None:
             "iterations": case.result.iterations,
             "active_joint_names": case.result.active_joint_names,
             "rank": case.result.rank,
-            "condition_number": case.result.condition_number,
+            "condition_number": (
+                case.result.condition_number
+                if np.isfinite(case.result.condition_number)
+                else None
+            ),
             "singular_values": case.result.singular_values.tolist(),
         }
-        (output_dir / f"{stem}_result.json").write_text(
-            json.dumps(payload, indent=2) + "\n", encoding="utf-8"
+        if case.result.sample_diagnostics is not None:
+            payload["sample_diagnostics"] = case.result.sample_diagnostics.to_dict()
+        write_text_atomic(
+            output_dir / f"{stem}_result.json",
+            json.dumps(payload, indent=2, allow_nan=False) + "\n",
         )
 
 
-def main() -> None:
+def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--no-viewer", action="store_true")
     parser.add_argument("--orientation-range-deg", type=float, default=60.0)
     parser.add_argument("--orientation-count", type=int, default=41)
-    parser.add_argument("--output-dir", type=Path, help="export measured CSV and result JSON")
-    args = parser.parse_args()
-    rpy_deltas = make_rpy_samples(
-        max_angle_deg=args.orientation_range_deg, count=args.orientation_count
+    parser.add_argument(
+        "--output-dir", type=Path, help="export measured CSV and result JSON"
     )
-    cases = build_cases(rpy_deltas)
+    args = parser.parse_args()
+    try:
+        rpy_deltas = make_rpy_samples(
+            max_angle_deg=args.orientation_range_deg, count=args.orientation_count
+        )
+        cases = build_cases(rpy_deltas)
+    except (ImportError, OSError, RuntimeError, ValueError) as exc:
+        parser.error(str(exc))
     print_cases(cases)
     if args.output_dir:
-        export_cases(cases, args.output_dir)
+        try:
+            export_cases(cases, args.output_dir)
+        except (OSError, ValueError) as exc:
+            parser.error(f"cannot export results: {exc}")
         print(f"Output       : exported calibration data to {args.output_dir}")
     if args.no_viewer:
-        return
+        return 0 if all(case.result.converged for case in cases.values()) else 2
 
     try:
         import viser
         from viser.extras import ViserUrdf
     except ImportError as exc:
-        raise SystemExit("Install the viewer with `pip install -e '.[simulation]'`") from exc
+        raise SystemExit(
+            "Install the viewer with `pip install -e '.[simulation]'`"
+        ) from exc
     server = viser.ViserServer()
     robot = ViserUrdf(server, URDF)
     first = next(iter(cases.values()))
     point = server.scene.add_icosphere(
-        "/fixed_tcp_point", radius=0.025, color=(255, 40, 40), position=first.dataset.target_xyz
+        "/fixed_tcp_point",
+        radius=0.025,
+        color=(255, 40, 40),
+        position=first.dataset.target_xyz,
     )
-    selector = server.gui.add_dropdown("TCP case", options=tuple(cases), initial_value=first.name)
+    selector = server.gui.add_dropdown(
+        "TCP case", options=tuple(cases), initial_value=first.name
+    )
     slider = server.gui.add_slider(
         "Contact pose", min=0, max=len(rpy_deltas) - 1, step=1, initial_value=0
     )
@@ -211,10 +236,12 @@ def main() -> None:
     selector.on_update(lambda _: update())
     slider.on_update(lambda _: update())
     update()
-    print("Viewer       : Viser is running; switch TCP case and contact pose in the browser.")
+    print(
+        "Viewer       : Viser is running; switch TCP case and contact pose in the browser."
+    )
     while True:
         time.sleep(1.0)
 
 
 if __name__ == "__main__":
-    main()
+    raise SystemExit(main())

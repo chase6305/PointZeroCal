@@ -477,8 +477,9 @@ def ur10_coverage(output: Path, preview: Path | None) -> None:
             color=MUTED,
         )
         suffix = ".zh-CN" if zh else ""
+        svg_path = output / f"ur10-sampling{suffix}.svg"
         fig.savefig(
-            output / f"ur10-sampling{suffix}.svg",
+            svg_path,
             metadata={
                 "Date": None,
                 "Title": tr(
@@ -486,6 +487,15 @@ def ur10_coverage(output: Path, preview: Path | None) -> None:
                     "UR10 fixed-point poses and joint coverage",
                 ),
             },
+        )
+        # Matplotlib adds trailing spaces to SVG path data.
+        svg_path.write_text(
+            "\n".join(
+                line.rstrip()
+                for line in svg_path.read_text(encoding="utf-8").splitlines()
+            )
+            + "\n",
+            encoding="utf-8",
         )
         if preview:
             fig.savefig(preview / f"ur10-sampling{suffix}.png", dpi=140)

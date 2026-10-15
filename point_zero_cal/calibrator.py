@@ -8,8 +8,13 @@ import numpy as np
 from numpy.typing import ArrayLike, NDArray
 
 from . import _groups
-from ._least_squares import backtracking_solve, damped_svd_step
-from ._validation import finite_scalar, kinematics_metadata, positive_integer, real_array
+from ._least_squares import backtracking_solve, damped_svd_step, numerical_rank
+from ._validation import (
+    finite_scalar,
+    kinematics_metadata,
+    positive_integer,
+    real_array,
+)
 from .contacts import (
     ContactEvaluation,
     ContactGroup,
@@ -19,7 +24,13 @@ from .sampling import CandidateRanking, CandidateScore, ObservabilityReport
 
 
 class Kinematics(Protocol):
-    """Minimal kinematics interface required by the calibrator."""
+    """Minimal kinematics interface required by the calibrator.
+
+    Held-out reports also accept an optional ``position_batch`` method with
+    configurations shaped (N, dof), returning positions shaped (N, 3) in metres.
+    An optional ``position_and_jacobian_batch`` additionally returns Jacobians
+    shaped (N, 3, dof), in m/rad, for calibration and candidate scoring.
+    """
 
     @property
     def dof(self) -> int: ...
@@ -207,7 +218,7 @@ class JointZeroCalibrator:
         rank_tolerance: float = 1e-8,
     ) -> None:
         self.kinematics = kinematics
-        kinematics_metadata(kinematics.dof, kinematics.joint_names)
+        self._joint_names = kinematics_metadata(kinematics.dof, kinematics.joint_names)
         self.max_iterations = positive_integer(max_iterations, "max_iterations")
         self.step_tolerance = finite_scalar(step_tolerance, "step_tolerance")
         self.residual_tolerance = finite_scalar(
@@ -265,12 +276,9 @@ class JointZeroCalibrator:
         # including when the final allowed update reaches the solution.
         # A relative threshold represents engineering observability better than
         # NumPy's machine-precision default for nearly zero Jacobian columns.
-        cutoff = (
-            singular_values[0] * self.rank_tolerance if singular_values.size else 0.0
-        )
-        rank = int(np.count_nonzero(singular_values > cutoff))
+        rank = numerical_rank(singular_values, self.rank_tolerance)
         condition = (
-            float(singular_values[0] / singular_values[-1])
+            float(singular_values[0]) / float(singular_values[-1])
             if rank == active.size
             else float("inf")
         )
@@ -304,7 +312,7 @@ class JointZeroCalibrator:
             condition_number=condition,
             message=message,
             sample_count=len(q),
-            active_joint_names=tuple(self.kinematics.joint_names[i] for i in active),
+            active_joint_names=tuple(self._joint_names[i] for i in active),
             singular_values=singular_values,
             initial_point_rms=initial_point_rms,
             corrected_point_rms=corrected_point_rms,
@@ -356,10 +364,9 @@ class JointZeroCalibrator:
         initial = self._group_report(fit.initial.positions, offsets, plan)
         final = self._group_report(fit.current.positions, fit.offsets, plan)
         values = fit.singular_values
-        cutoff = values[0] * self.rank_tolerance if values.size else 0.0
-        rank = int(np.count_nonzero(values > cutoff))
+        rank = numerical_rank(values, self.rank_tolerance)
         condition = (
-            float(values[0] / values[-1]) if rank == active.size else float("inf")
+            float(values[0]) / float(values[-1]) if rank == active.size else float("inf")
         )
         if rank < active.size:
             message = (
@@ -387,7 +394,7 @@ class JointZeroCalibrator:
             condition_number=condition,
             message=message,
             sample_count=len(q),
-            active_joint_names=tuple(self.kinematics.joint_names[i] for i in active),
+            active_joint_names=tuple(self._joint_names[i] for i in active),
             singular_values=values,
             initial_point_rms=initial.point_rms_m,
             corrected_point_rms=final.point_rms_m,
@@ -413,7 +420,7 @@ class JointZeroCalibrator:
         offsets = self._initial_offsets(offsets_rad)
         with np.errstate(over="ignore", invalid="ignore"):
             configurations = q + offsets
-        positions, _ = self._evaluate(configurations)
+        positions = self._evaluate_positions(configurations)
         return self._group_report(positions, offsets, plan)
 
     def rank_contact_candidates(
@@ -462,20 +469,18 @@ class JointZeroCalibrator:
             group_positions, group_jacobians, plan, active
         )
         baseline = self._observability_report(baseline_matrix, active)
-        if not plan.distances:
-            # Appending to one contact changes only its centred block. All
-            # other groups retain their rows with a common sample-count scale.
-            section = plan.sections[target]
-            start, stop = 3 * section.start, 3 * section.stop
-            prospective_matrix = np.empty((len(baseline_matrix) + 3, len(active)))
-            count_scale = np.sqrt((len(q) + 1) / len(q))
-            prospective_matrix[:start] = baseline_matrix[:start] * count_scale
-            prospective_matrix[stop + 3 :] = baseline_matrix[stop:] * count_scale
-            target_scale = np.sqrt(
-                (len(q) + 1) / (len(plan.groups) * (section.stop - section.start + 1))
+        information = (
+            _groups.candidate_information(
+                baseline_matrix,
+                group_jacobians,
+                plan,
+                active,
+                target,
+                group_positions=group_positions,
             )
-            if plan.groups[target].sigma_m is not None:
-                target_scale /= plan.groups[target].sigma_m
+            if len(candidate_q) > 1
+            else None
+        )
         scores = []
         for source_index, candidate in enumerate(candidate_q):
             with np.errstate(over="ignore", invalid="ignore"):
@@ -483,18 +488,14 @@ class JointZeroCalibrator:
             candidate_position, candidate_jacobian = self._evaluate(
                 candidate_configuration[None, :]
             )
-            if not plan.distances:
-                augmented = np.concatenate(
-                    (group_jacobians[target], candidate_jacobian)
+            prospective_matrix = (
+                information.append(
+                    candidate_jacobian[0][:, active], candidate_position[0]
                 )
-                prospective_matrix[start : stop + 3] = (
-                    self._center(augmented[:, :, active]) * target_scale
-                ).reshape(-1, len(active))
-                if not np.all(np.isfinite(prospective_matrix)):
-                    raise ValueError(
-                        "weighted contact Jacobian exceeds the floating-point range"
-                    )
-            else:
+                if information is not None
+                else None
+            )
+            if prospective_matrix is None:
                 prospective_positions = list(group_positions)
                 prospective_jacobians = list(group_jacobians)
                 prospective_positions[target] = np.vstack(
@@ -509,7 +510,13 @@ class JointZeroCalibrator:
                     plan,
                     active,
                 )
-            report = self._observability_report(prospective_matrix, active)
+            report = self._observability_report(
+                prospective_matrix,
+                active,
+                matrix_rows=information.matrix_rows
+                if information is not None
+                else None,
+            )
             scores.append(
                 CandidateScore(
                     source_index,
@@ -562,29 +569,44 @@ class JointZeroCalibrator:
         )
 
     def _observability_report(
-        self, matrix: NDArray[np.float64], active: NDArray[np.int64]
+        self,
+        matrix: NDArray[np.float64],
+        active: NDArray[np.int64],
+        *,
+        matrix_rows: int | None = None,
     ) -> ObservabilityReport:
-        """Return a row-count-normalized spectrum for comparing candidates."""
-        normalized = matrix / np.sqrt(matrix.shape[0])
+        """Normalize by measurement rows, including for QR-compressed matrices."""
+        rows = matrix.shape[0] if matrix_rows is None else matrix_rows
+        normalized = matrix / np.sqrt(rows)
         values = np.linalg.svd(normalized, compute_uv=False)
-        cutoff = values[0] * self.rank_tolerance if values.size else 0.0
-        rank = int(np.count_nonzero(values > cutoff))
+        tiny_spectrum = np.sqrt(np.finfo(float).tiny)
+        if values.size and values[-1] < tiny_spectrum and (
+            values[0] < tiny_spectrum
+            or np.any((matrix != 0) & (np.abs(normalized) < np.finfo(float).tiny))
+        ):
+            # Dividing every subnormal entry first can erase a spectrum that
+            # remains representable after aggregation. Restore units after SVD.
+            # Only scale upwards: shrinking a mixed-scale matrix can erase
+            # its weak columns before SVD just as row normalization can.
+            scale = min(float(np.max(np.abs(matrix))), 1.0)
+            if scale:
+                unit_values = np.linalg.svd(matrix / scale, compute_uv=False)
+                if np.all(np.isfinite(unit_values)):
+                    values = _groups.weighted_values(unit_values, scale, np.sqrt(rows))
+        rank = numerical_rank(values, self.rank_tolerance)
         fully_observable = rank == len(active)
-        condition = float(values[0] / values[-1]) if fully_observable else float("inf")
+        condition = (
+            float(values[0]) / float(values[-1]) if fully_observable else float("inf")
+        )
         smallest = float(values[rank - 1]) if rank else 0.0
         return ObservabilityReport(
-            tuple(self.kinematics.joint_names[index] for index in active),
+            tuple(self._joint_names[index] for index in active),
             rank,
             values,
             smallest,
             condition,
-            matrix.shape[0],
+            rows,
         )
-
-    def _group_centres(
-        self, positions: NDArray[np.float64], plan: _GroupPlan
-    ) -> tuple[list[NDArray[np.float64]], NDArray[np.float64]]:
-        return _groups.group_centres(positions, plan)
 
     def _group_state(
         self,
@@ -625,7 +647,11 @@ class JointZeroCalibrator:
         positions, jacobians = self._evaluate(configurations)
         matrix, error = self._linear_system(positions, jacobians, active)
         return _FitState(
-            positions, jacobians, matrix, error, self._point_rms(positions)
+            positions,
+            jacobians,
+            matrix,
+            error,
+            _groups.centered_rms(error.reshape(-1, 3)),
         )
 
     def _solve_offsets(
@@ -678,12 +704,48 @@ class JointZeroCalibrator:
             fit.stalled,
         )
 
+    def _evaluate_positions(
+        self, configurations: NDArray[np.float64]
+    ) -> NDArray[np.float64]:
+        """Use optional position-only batches for held-out observations."""
+        if not np.all(np.isfinite(configurations)):
+            raise ValueError("corrected configurations must contain only finite values")
+        batch = getattr(self.kinematics, "position_batch", None)
+        if not callable(batch):
+            return self._evaluate(configurations)[0]
+        positions = real_array(batch(configurations), "kinematics positions")
+        if positions.shape != (len(configurations), 3):
+            raise ValueError(
+                f"batch kinematics must return positions shape ({len(configurations)}, 3)"
+            )
+        if not np.all(np.isfinite(positions)):
+            raise ValueError("kinematics returned non-finite values")
+        return positions.copy()
+
     def _evaluate(
         self, configurations: NDArray[np.float64]
     ) -> tuple[NDArray[np.float64], NDArray[np.float64]]:
         """Evaluate and validate the backend at every configuration."""
         if not np.all(np.isfinite(configurations)):
             raise ValueError("corrected configurations must contain only finite values")
+        batch = getattr(self.kinematics, "position_and_jacobian_batch", None)
+        if callable(batch):
+            positions, jacobians = batch(configurations)
+            positions = real_array(positions, "kinematics positions")
+            jacobians = real_array(jacobians, "kinematics jacobians")
+            if positions.shape != (len(configurations), 3) or jacobians.shape != (
+                len(configurations),
+                3,
+                self.kinematics.dof,
+            ):
+                raise ValueError(
+                    "batch kinematics must return positions shape "
+                    f"({len(configurations)}, 3) and jacobians shape "
+                    f"({len(configurations)}, 3, {self.kinematics.dof})"
+                )
+            if not np.all(np.isfinite(positions)) or not np.all(np.isfinite(jacobians)):
+                raise ValueError("kinematics returned non-finite values")
+            return positions.copy(), jacobians.copy()
         positions = np.empty((len(configurations), 3))
         jacobians = np.empty((len(configurations), 3, self.kinematics.dof))
         for index, configuration in enumerate(configurations):
@@ -722,7 +784,13 @@ class JointZeroCalibrator:
     ) -> tuple[NDArray[np.float64], NDArray[np.float64]]:
         """Build ``(J_i - mean(J)) step = mean(p) - p_i``."""
         centered_positions = JointZeroCalibrator._center(positions)
-        active_jacobians = jacobians[:, :, active]
+        # Small blocks cost less to copy than to inspect for a contiguous view.
+        columns = (
+            _groups.active_columns(active, jacobians.shape[-1])
+            if len(jacobians) * 3 * active.size >= 1024
+            else active
+        )
+        active_jacobians = jacobians[:, :, columns]
         centered_jacobians = JointZeroCalibrator._center(active_jacobians)
         matrix = centered_jacobians.reshape(-1, active.size)
         return matrix, -centered_positions.reshape(-1)
@@ -753,7 +821,7 @@ class JointZeroCalibrator:
         return offsets.copy()
 
     def _active_indices(self, fixed_joints: Sequence[int | str]) -> NDArray[np.int64]:
-        names = self.kinematics.joint_names
+        names = self._joint_names
         fixed: set[int] = set()
         if isinstance(fixed_joints, (str, bytes)):
             # Keep the public ValueError contract for invalid input values.

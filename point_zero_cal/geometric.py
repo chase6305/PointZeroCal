@@ -9,13 +9,14 @@ unobservable equivalence between joint offsets and mounting rotations.
 
 from collections.abc import Sequence
 from dataclasses import dataclass
+from math import isfinite
 from typing import Protocol
 
 import numpy as np
 from numpy.typing import ArrayLike, NDArray
 
 from . import _groups, _least_squares
-from ._least_squares import backtracking_solve, damped_svd_step
+from ._least_squares import backtracking_solve, damped_svd_step, numerical_rank
 from ._validation import (
     finite_real,
     finite_scalar,
@@ -105,6 +106,13 @@ class GeometricKinematics(Kinematics, Protocol):
     the geometric Jacobian. Configuration and array conventions follow
     :class:`Kinematics`; Jacobian column ``k`` is the TCP position derivative
     with respect to parameter ``k``, in metres per parameter unit.
+
+    A backend may optionally implement ``position_and_geometric_jacobian_batch``
+    with inputs ``(N, dof)`` and ``(n_parameters,)``, returning arrays shaped
+    ``(N, 3)`` and ``(N, 3, n_parameters)`` for the same parameter vector.
+    Calibrators validate and copy batch outputs just like scalar outputs.
+    Held-out reports additionally accept ``geometric_position_batch`` with the
+    same inputs, returning only the (N, 3) positions in metres.
     """
 
     @property
@@ -254,6 +262,12 @@ class GeometricCalibrator:
         if len(set(labels)) != len(labels):
             raise ValueError("geometric parameter labels must be unique")
         self._parameters = parameters
+        self._nominals = np.array([parameter.nominal for parameter in parameters])
+        self._prior_scales = np.array(
+            [parameter.prior_scale for parameter in parameters]
+        )
+        self._nominals.setflags(write=False)
+        self._prior_scales.setflags(write=False)
         self.max_iterations = positive_integer(max_iterations, "max_iterations")
         self.step_tolerance = finite_scalar(step_tolerance, "step_tolerance")
         self.residual_tolerance = finite_scalar(
@@ -333,28 +347,20 @@ class GeometricCalibrator:
         _, values, right = np.linalg.svd(
             data_matrix, full_matrices=data_matrix.shape[0] < data_matrix.shape[1]
         )
-        cutoff = values[0] * self.rank_tolerance if values.size else 0.0
-        data_rank = int(np.count_nonzero(values > cutoff))
+        data_rank = numerical_rank(values, self.rank_tolerance)
         condition = (
-            float(values[0] / values[-1]) if data_rank == active.size else float("inf")
+            float(values[0]) / float(values[-1]) if data_rank == active.size else float("inf")
         )
         nullspace = self._nullspace_directions(right[data_rank:], active)
         initial = _groups.group_report(
             initial_positions, plan, np.zeros(self.kinematics.dof)
         )
         final = _groups.group_report(positions, plan, np.zeros(self.kinematics.dof))
-        prior_residuals = np.array(
-            [
-                (full[k] - self._parameters[k].nominal)
-                / self._parameters[k].prior_scale
-                for k in active
-            ]
-        )
-        prior_penalty = float(
-            np.hypot.reduce(prior_residuals / np.sqrt(len(active)))
-            if len(prior_residuals)
-            else 0.0
-        )
+        # Solver rows already contain finite weighted differences. Reusing
+        # them avoids repeating an overflowing unweighted parameter subtraction.
+        prior_penalty = _groups.centered_rms(
+            fit.current.error[-len(active) :].reshape(-1, 1)
+        ) / np.sqrt(len(q))
         if data_rank < active.size:
             message = (
                 f"insufficient data observability: rank {data_rank} < "
@@ -422,7 +428,7 @@ class GeometricCalibrator:
             raise ValueError(
                 f"parameters must have shape ({len(self._parameters)},) with finite values"
             )
-        positions, _ = self._evaluate(q, values.copy())
+        positions = self._evaluate_positions(q, values.copy())
         return _groups.group_report(positions, plan, np.zeros(self.kinematics.dof))
 
     def _prepare_groups(
@@ -434,9 +440,7 @@ class GeometricCalibrator:
         return _groups.prepare_groups(groups, distances, unit, self.kinematics.dof)
 
     def _initial_parameters(self, value: ArrayLike | None) -> NDArray[np.float64]:
-        parameters = np.array(
-            [parameter.nominal for parameter in self._parameters], dtype=float
-        )
+        parameters = self._nominals.copy()
         if value is not None:
             seed = real_array(value, "initial_parameters")
             if seed.shape != (len(self._parameters),) or not np.all(np.isfinite(seed)):
@@ -446,9 +450,9 @@ class GeometricCalibrator:
                 )
             parameters = seed.copy()
         for parameter, estimate in zip(self._parameters, parameters, strict=True):
-            if (
-                parameter.lower is not None and estimate < parameter.lower
-            ) or (parameter.upper is not None and estimate > parameter.upper):
+            if (parameter.lower is not None and estimate < parameter.lower) or (
+                parameter.upper is not None and estimate > parameter.upper
+            ):
                 raise ValueError(
                     f"initial_parameters for {parameter.label} must lie within bounds"
                 )
@@ -514,12 +518,41 @@ class GeometricCalibrator:
         """
         rows = [data_matrix]
         residuals = [data_residual]
-        prior_matrix = np.zeros((len(active), len(active)))
-        prior_residual = np.empty(len(active))
-        for row, k in enumerate(active):
-            scale = np.sqrt(total_samples) / self._parameters[k].prior_scale
-            prior_matrix[row, row] = scale
-            prior_residual[row] = (parameters[k] - self._parameters[k].nominal) * scale
+        root_samples = float(np.sqrt(total_samples))
+        if len(active) <= 3:
+            prior_matrix = np.zeros((len(active), len(active)))
+            prior_residual = np.empty(len(active))
+            failed_rows = []
+            for row, k in enumerate(active):
+                scale = root_samples / self._parameters[k].prior_scale
+                difference = float(parameters[k]) - self._parameters[k].nominal
+                prior_matrix[row, row] = scale
+                prior_residual[row] = difference * scale
+                if not isfinite(difference):
+                    failed_rows.append(row)
+        else:
+            with np.errstate(over="ignore", invalid="ignore", divide="ignore"):
+                scales = root_samples / self._prior_scales[active]
+                prior_matrix = np.diag(scales)
+                differences = parameters[active] - self._nominals[active]
+                prior_residual = differences * scales
+            failed_rows = np.flatnonzero(~np.isfinite(differences))
+        for row in failed_rows:
+            with np.errstate(over="ignore", invalid="ignore", divide="ignore"):
+                k = active[row]
+                magnitude = max(abs(parameters[k]), abs(self._parameters[k].nominal))
+                normalized = (
+                    parameters[k] / magnitude - self._parameters[k].nominal / magnitude
+                )
+                magnitude_mantissa, magnitude_exponent = np.frexp(magnitude)
+                scale_mantissa, scale_exponent = np.frexp(root_samples)
+                sigma_mantissa, sigma_exponent = np.frexp(
+                    self._parameters[k].prior_scale
+                )
+                prior_residual[row] = np.ldexp(
+                    normalized * magnitude_mantissa * scale_mantissa / sigma_mantissa,
+                    magnitude_exponent + scale_exponent - sigma_exponent,
+                )
         rows.append(prior_matrix)
         residuals.append(prior_residual)
         return np.vstack(rows), np.concatenate(residuals)
@@ -534,8 +567,14 @@ class GeometricCalibrator:
             damping=self.damping,
             rank_tolerance=self.rank_tolerance,
         )
-        projected = self._project_bounds(fit.parameters + step, active)
-        if projected is not None and np.all(projected == fit.parameters):
+        with np.errstate(over="ignore", invalid="ignore"):
+            candidate = fit.parameters + step
+        projected = self._project_bounds(candidate, active)
+        if (
+            projected is not None
+            and np.all(projected == fit.parameters)
+            and np.any(projected != candidate)
+        ):
             return "parameter bound blocked the remaining correction"
         return "no residual-decreasing parameter step found"
 
@@ -558,10 +597,44 @@ class GeometricCalibrator:
                 directions.append(" + ".join(terms))
         return tuple(directions)
 
+    def _evaluate_positions(
+        self, q: NDArray[np.float64], parameters: NDArray[np.float64]
+    ) -> NDArray[np.float64]:
+        """Use optional position-only batches for held-out observations."""
+        batch = getattr(self.kinematics, "geometric_position_batch", None)
+        if not callable(batch):
+            return self._evaluate(q, parameters)[0]
+        positions = real_array(batch(q, parameters), "kinematics positions")
+        if positions.shape != (len(q), 3):
+            raise ValueError(
+                f"batch kinematics must return positions shape ({len(q)}, 3)"
+            )
+        if not np.all(np.isfinite(positions)):
+            raise ValueError("kinematics returned non-finite values")
+        return positions.copy()
+
     def _evaluate(
         self, q: NDArray[np.float64], parameters: NDArray[np.float64]
     ) -> tuple[NDArray[np.float64], NDArray[np.float64]]:
         """Evaluate and validate the geometric backend at every configuration."""
+        batch = getattr(self.kinematics, "position_and_geometric_jacobian_batch", None)
+        if callable(batch):
+            positions, jacobians = batch(q, parameters)
+            positions = real_array(positions, "kinematics positions")
+            jacobians = real_array(jacobians, "kinematics geometric jacobians")
+            if positions.shape != (len(q), 3) or jacobians.shape != (
+                len(q),
+                3,
+                len(self._parameters),
+            ):
+                raise ValueError(
+                    "batch kinematics must return positions shape "
+                    f"({len(q)}, 3) and geometric jacobians shape "
+                    f"({len(q)}, 3, {len(self._parameters)})"
+                )
+            if not np.all(np.isfinite(positions)) or not np.all(np.isfinite(jacobians)):
+                raise ValueError("kinematics returned non-finite values")
+            return positions.copy(), jacobians.copy()
         positions = np.empty((len(q), 3))
         jacobians = np.empty((len(q), 3, len(self._parameters)))
         for index, configuration in enumerate(q):

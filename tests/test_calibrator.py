@@ -3,7 +3,13 @@ import json
 import numpy as np
 import pytest
 
-from point_zero_cal import JointZeroCalibrator, SampleDiagnostics
+from point_zero_cal import (
+    ContactGroup,
+    JointZeroCalibrator,
+    KnownDistance,
+    SampleDiagnostics,
+    _groups,
+)
 
 
 class PlanarArm:
@@ -40,6 +46,21 @@ def test_recovers_offsets_from_fixed_point_samples():
     assert result.active_joint_names == ("elbow",)
     assert result.corrected_point_rms < result.initial_point_rms
     assert result.residual_rms == result.corrected_point_rms
+
+
+def test_numpy_joint_names_support_fixed_names_and_json_reports():
+    class Backend(PlanarArm):
+        joint_names = np.array(PlanarArm.joint_names)
+
+    expected = np.array([0.0, -0.025])
+    q = np.array([[0.0, np.pi / 2], [np.pi / 2, -np.pi / 2]])
+    result = JointZeroCalibrator(Backend()).calibrate(
+        q - expected, fixed_joints=["shoulder"]
+    )
+    assert result.converged
+    assert result.active_joint_names == ("elbow",)
+    np.testing.assert_allclose(result.offsets_rad, expected, atol=1e-7)
+    json.dumps(result.to_dict(), allow_nan=False)
 
 
 @pytest.mark.parametrize(
@@ -124,6 +145,111 @@ class SineKinematics:
 
     def position_and_jacobian(self, q):
         return np.array([np.sin(q[0]), 0.0, 0.0]), np.array([[np.cos(q[0])], [0], [0]])
+
+
+def test_single_state_reuses_centred_position_residual(monkeypatch):
+    solver = JointZeroCalibrator(PlanarArm())
+    q = np.array([[0.0, 1.2], [0.8, -1.3], [1.1, -1.5]])
+    positions, _ = solver._evaluate(q)
+    expected_score = solver._point_rms(positions)
+    center = _groups.center
+    calls = []
+
+    def counted_center(values):
+        calls.append(values.shape)
+        return center(values)
+
+    monkeypatch.setattr(_groups, "center", counted_center)
+    state = solver._single_state(q, np.array([1]))
+    assert calls == [(3, 3), (3, 3, 1)]
+    assert state.score == expected_score
+    np.testing.assert_allclose(state.error.reshape(-1, 3), -center(positions))
+
+
+def test_observability_report_preserves_a_subnormal_observable_direction():
+    solver = JointZeroCalibrator(SineKinematics(), rank_tolerance=0.8)
+    report = solver._observability_report(np.array([[1e-323]]), np.array([0]))
+    assert report.rank == 1
+    assert report.fully_observable
+    assert report.condition_number == 1
+
+
+def test_observability_normalization_does_not_erase_a_representable_spectrum():
+    smallest = np.nextafter(0.0, 1.0)
+    matrix = np.array([[smallest], [-smallest], [0], [0], [0], [0]])
+    report = JointZeroCalibrator(SineKinematics())._observability_report(
+        matrix, np.array([0])
+    )
+    assert report.rank == 1
+    assert report.condition_number == 1
+    np.testing.assert_array_equal(report.singular_values, [smallest])
+
+
+@pytest.mark.parametrize("strong", [1e-15, 0.5, 2.0])
+@pytest.mark.parametrize("rows", [6, 32])
+def test_observability_keeps_a_subnormal_mode_beside_a_strong_column(strong, rows):
+    smallest = np.nextafter(0.0, 1.0)
+    matrix = np.zeros((rows, 2))
+    matrix[:2, 0] = [strong, -strong]
+    matrix[2:, 1] = np.tile([smallest, -smallest], (rows - 2) // 2)
+    solver = JointZeroCalibrator(PlanarArm(), rank_tolerance=1e-310)
+    report = solver._observability_report(matrix, np.arange(2))
+    np.testing.assert_allclose(report.singular_values[0], strong * np.sqrt(2 / rows))
+    assert report.singular_values[1] == smallest
+    assert report.rank == (2 if strong == 1e-15 else 1)
+
+
+def test_extreme_independent_groups_support_fitting_evaluation_and_ranking():
+    class SeparatedContacts:
+        dof = 2
+        joint_names = ("reference", "offset")
+
+        def position_and_jacobian(self, q):
+            return (
+                np.array([q[0] * 1e308, np.sin(q[1]), 0]),
+                np.array([[1e308, 0], [0, np.cos(q[1])], [0, 0]]),
+            )
+
+    groups = [
+        ContactGroup("a", [[-1, 0.02], [-1, np.pi + 0.02]], sigma_m=0.5),
+        ContactGroup("b", [[1, 0.02], [1, np.pi + 0.02]]),
+    ]
+    solver = JointZeroCalibrator(SeparatedContacts())
+    with np.errstate(over="raise", invalid="raise"):
+        result = solver.calibrate_groups(groups)
+        evaluation = solver.evaluate_groups(groups, offsets_rad=result.offsets_rad)
+        ranking = solver.rank_contact_candidates(
+            groups, [[-1, 2 * np.pi]], group_name="a"
+        )
+    assert result.converged
+    assert result.offsets_rad[1] == pytest.approx(-0.02, abs=1e-8)
+    assert evaluation.point_rms_m < 1e-8
+    assert ranking.baseline.rank == ranking.recommended.observability.rank == 1
+
+
+@pytest.mark.parametrize("action", ["fit", "evaluate", "rank"])
+def test_unrepresentable_contact_distance_is_rejected(action):
+    class Backend:
+        dof = 1
+        joint_names = ("joint",)
+
+        def position_and_jacobian(self, q):
+            position = np.array([1.5e308, 1.5e308, 0]) if q[0] < 0 else np.zeros(3)
+            return position, np.zeros((3, 1))
+
+    solver = JointZeroCalibrator(Backend())
+    groups = [ContactGroup("a", [[-1], [-1]]), ContactGroup("b", [[1], [1]])]
+    distances = [KnownDistance("a", "b", 1)]
+    with np.errstate(over="raise", invalid="raise"):
+        with pytest.raises(ValueError, match="contact distance exceeds"):
+            if action == "fit":
+                solver.calibrate_groups(groups, distances=distances, fixed_joints=[])
+            elif action == "evaluate":
+                solver.evaluate_groups(groups, offsets_rad=[0], distances=distances)
+            else:
+                solver.rank_contact_candidates(
+                    groups, [[-1]], group_name="a", distances=distances, fixed_joints=[]
+                )
 
 
 @pytest.mark.parametrize("damping", [0.0, 1e-10])

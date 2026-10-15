@@ -73,11 +73,14 @@ def test_ur10_all_components_match_finite_differences():
 
 def test_ur10_derivatives_at_nonzero_deviations():
     backend = PinocchioGeometricKinematics(
-        UR10, "ee_link", parameters(("Joint2", "Joint5", "jointEE")),
+        UR10,
+        "ee_link",
+        parameters(("Joint2", "Joint5", "jointEE")),
         tcp_xyz=(0.08, 0, 0.16),
     )
     assert_columns_match_finite_differences(
-        backend, np.array([0.1, -1.0, 1.5, -1.2, 0.7, 0.3]),
+        backend,
+        np.array([0.1, -1.0, 1.5, -1.2, 0.7, 0.3]),
         np.linspace(-0.2, 0.2, len(backend.geometric_parameters)),
     )
 
@@ -114,9 +117,7 @@ def test_parent_link_frame_formula_through_an_interleaved_fixed_joint(tmp_path):
     )
     assert_columns_match_finite_differences(backend, np.array([0.4, -0.9]))
     deviations = np.linspace(-0.05, 0.05, len(backend.geometric_parameters))
-    assert_columns_match_finite_differences(
-        backend, np.array([0.4, -0.9]), deviations
-    )
+    assert_columns_match_finite_differences(backend, np.array([0.4, -0.9]), deviations)
     # Check the physical semantics against a separately rebuilt model.
     import xml.etree.ElementTree as ET
 
@@ -125,7 +126,9 @@ def test_parent_link_frame_formula_through_an_interleaved_fixed_joint(tmp_path):
         origin = tree.getroot().find(f"joint[@name='{name}']/origin")
         xyz = np.fromstring(origin.get("xyz", "0 0 0"), sep=" ")
         rpy = np.fromstring(origin.get("rpy", "0 0 0"), sep=" ")
-        for parameter, value in zip(backend.geometric_parameters, deviations):
+        for parameter, value in zip(
+            backend.geometric_parameters, deviations, strict=True
+        ):
             if parameter.joint_name == name:
                 index = COMPONENTS.index(parameter.component)
                 (xyz if index < 3 else rpy)[index % 3] += value
@@ -184,6 +187,29 @@ def test_parameters_outside_tcp_ancestry_have_zero_derivatives(planar_urdf):
     np.testing.assert_array_equal(
         backend.position_and_geometric_jacobian(q, deviations)[1], 0.0
     )
+
+
+def test_combined_rotation_columns_preserve_parameter_order_and_ignore_descendants():
+    selected = [
+        GeometricParameter(joint, component, 0.01)
+        for joint, component in (
+            ("Joint5", "yaw"),
+            ("Joint2", "pitch"),
+            ("Joint1", "z"),
+            ("jointEE", "roll"),
+            ("Joint3", "roll"),
+            ("Joint2", "x"),
+            ("Joint1", "yaw"),
+        )
+    ]
+    backend = PinocchioGeometricKinematics(
+        UR10, "Link3", selected, tcp_xyz=(0.08, 0, 0.16)
+    )
+    q = np.array([0.1, -1.0, 1.5, -1.2, 0.7, 0.3])
+    deviations = np.linspace(-0.05, 0.05, len(selected))
+    assert_columns_match_finite_differences(backend, q, deviations)
+    jacobian = backend.position_and_geometric_jacobian(q, deviations)[1]
+    np.testing.assert_array_equal(jacobian[:, [0, 3]], 0.0)
 
 
 def test_nominal_model_is_restored_after_deviated_evaluations():
@@ -305,3 +331,140 @@ def test_model_restored_when_forward_kinematics_raises(planar_urdf, monkeypatch)
         with pytest.raises(RuntimeError, match="injected FK failure"):
             backend.position_and_geometric_jacobian(q, np.full(12, 0.01))
     np.testing.assert_array_equal(backend.tcp_pose(q).homogeneous, expected)
+
+
+@pytest.mark.parametrize("robot", ["planar", "ur10"])
+@pytest.mark.parametrize("deviation", [0.0, 0.05])
+def test_batch_evaluation_matches_scalar_and_restores_model(
+    planar_urdf, robot, deviation
+):
+    rng = np.random.default_rng(106)
+    if robot == "planar":
+        backend = PinocchioGeometricKinematics(
+            planar_urdf,
+            "tip_link",
+            parameters(("joint2", "tip")),
+            tcp_xyz=(0.08, 0, 0.16),
+        )
+    else:
+        backend = PinocchioGeometricKinematics(
+            UR10,
+            "ee_link",
+            parameters(("Joint2", "Joint5", "jointEE")),
+            tcp_xyz=(0.08, 0, 0.16),
+        )
+    configurations = rng.uniform(-1, 1, size=(10, backend.dof))
+    deviations = rng.uniform(-deviation, deviation, len(backend.geometric_parameters))
+    configurations_before = configurations.copy()
+    deviations_before = deviations.copy()
+    nominal = backend.position_and_jacobian(configurations[0])
+    scalar = [
+        backend.position_and_geometric_jacobian(q, deviations) for q in configurations
+    ]
+    positions, jacobians = backend.position_and_geometric_jacobian_batch(
+        configurations, deviations
+    )
+    np.testing.assert_array_equal(positions, np.array([s[0] for s in scalar]))
+    np.testing.assert_array_equal(jacobians, np.array([s[1] for s in scalar]))
+    np.testing.assert_array_equal(configurations, configurations_before)
+    np.testing.assert_array_equal(deviations, deviations_before)
+    restored = backend.position_and_jacobian(configurations[0])
+    for original, actual in zip(nominal, restored, strict=True):
+        np.testing.assert_array_equal(actual, original)
+    positions_before, jacobians_before = positions.copy(), jacobians.copy()
+    backend.position_and_geometric_jacobian_batch(configurations, -deviations)
+    np.testing.assert_array_equal(positions, positions_before)
+    np.testing.assert_array_equal(jacobians, jacobians_before)
+
+
+@pytest.mark.parametrize(
+    "configurations",
+    [
+        [0.1, 0.2],
+        np.zeros((0, 2)),
+        np.zeros((2, 3)),
+        [[0, np.nan]],
+        [[0, np.inf]],
+        [[0, 1j]],
+    ],
+)
+@pytest.mark.parametrize(
+    "method", ["position_and_geometric_jacobian_batch", "geometric_position_batch"]
+)
+def test_batch_rejects_invalid_configurations(planar_urdf, configurations, method):
+    backend = PinocchioGeometricKinematics(
+        planar_urdf, "tip_link", parameters(("tip",))
+    )
+    with pytest.raises(ValueError, match="configurations"):
+        getattr(backend, method)(configurations, np.zeros(6))
+
+
+@pytest.mark.parametrize("deviations", [np.zeros(5), [np.nan] * 6, [1j] * 6])
+@pytest.mark.parametrize(
+    "method", ["position_and_geometric_jacobian_batch", "geometric_position_batch"]
+)
+def test_batch_rejects_invalid_parameters(planar_urdf, deviations, method):
+    backend = PinocchioGeometricKinematics(
+        planar_urdf, "tip_link", parameters(("tip",))
+    )
+    with pytest.raises(ValueError, match="parameters"):
+        getattr(backend, method)([[0.1, 0.2]], deviations)
+
+
+@pytest.mark.parametrize(
+    "method", ["position_and_geometric_jacobian_batch", "geometric_position_batch"]
+)
+def test_batch_restores_model_after_partial_fk_failure(
+    planar_urdf, monkeypatch, method
+):
+    backend = PinocchioGeometricKinematics(
+        planar_urdf, "tip_link", parameters(("joint2", "tip"))
+    )
+    q = np.array([0.2, -0.4])
+    expected = backend.position_and_jacobian(q)
+    forward = backend._pin.forwardKinematics
+    calls = 0
+
+    def fail_on_second(*args):
+        nonlocal calls
+        calls += 1
+        if calls == 2:
+            raise RuntimeError("injected partial batch failure")
+        return forward(*args)
+
+    with monkeypatch.context() as patch:
+        patch.setattr(backend._pin, "forwardKinematics", fail_on_second)
+        with pytest.raises(RuntimeError, match="partial batch failure"):
+            getattr(backend, method)(np.array([q, -q, q]), np.full(12, 0.01))
+    assert calls == 2
+    for original, restored in zip(
+        expected, backend.position_and_jacobian(q), strict=True
+    ):
+        np.testing.assert_array_equal(restored, original)
+
+
+@pytest.mark.parametrize("components", [COMPONENTS, ("x", "y", "z")])
+def test_geometric_positions_match_full_batch_without_derivatives(
+    planar_urdf, monkeypatch, components
+):
+    backend = PinocchioGeometricKinematics(
+        planar_urdf,
+        "tool",
+        parameters(("joint2", "tip"), components),
+        tcp_xyz=(0.13, -0.04, 0.08),
+        tcp_rpy=(0.1, -0.2, 0.3),
+    )
+    q = np.array([[0.3, -0.7], [-0.8, 0.5], [0.1, 0.2]])
+    deviations = np.linspace(-0.1, 0.1, len(backend.geometric_parameters))
+    nominal = backend.position_batch(q)
+    expected, _ = backend.position_and_geometric_jacobian_batch(q, deviations)
+
+    def forbid_derivatives(*args):
+        raise AssertionError("position evaluation must not compute derivatives")
+
+    monkeypatch.setattr(backend, "_rpy_tangent_axes", forbid_derivatives)
+    monkeypatch.setattr(backend._pin, "computeJointJacobians", forbid_derivatives)
+    actual = backend.geometric_position_batch(q, deviations)
+    backend.geometric_position_batch(q, -deviations)
+    np.testing.assert_array_equal(actual, expected)
+    np.testing.assert_array_equal(backend.position_batch(q), nominal)

@@ -289,14 +289,19 @@ def test_invalid_seeds_and_distances_are_rejected(planar_setup):
 def test_out_of_bounds_seeds_are_rejected(planar_setup, active, seed):
     nominal_path, _, groups = planar_setup
     backend = PinocchioGeometricKinematics(
-        nominal_path, "tip_link",
+        nominal_path,
+        "tip_link",
         [
-            GeometricParameter("joint2", "x", 1, active=active, lower=-0.01, upper=0.01),
+            GeometricParameter(
+                "joint2", "x", 1, active=active, lower=-0.01, upper=0.01
+            ),
             GeometricParameter("joint2", "y", 1),
         ],
     )
     with pytest.raises(ValueError, match="initial_parameters.*joint2.x.*bounds"):
-        GeometricCalibrator(backend).calibrate_groups(groups, initial_parameters=[seed, 0])
+        GeometricCalibrator(backend).calibrate_groups(
+            groups, initial_parameters=[seed, 0]
+        )
 
 
 def test_ur10_gauge_rank_deficiency_reports_nullspace_directions():
@@ -392,3 +397,58 @@ def test_wide_data_matrix_reports_complete_nullspace():
     assert fit.data_rank == 1
     assert len(fit.nullspace_directions) == 7
     assert np.isinf(fit.data_condition_number)
+
+
+def test_batch_and_scalar_backends_produce_identical_fits(planar_setup, monkeypatch):
+    nominal, _, groups = planar_setup
+    batch_solver = make_solver(nominal)
+    batch = batch_solver.calibrate_groups(groups, distances=[planar_distance()])
+    scalar_solver = make_solver(nominal)
+    monkeypatch.setattr(
+        scalar_solver.kinematics, "position_and_geometric_jacobian_batch", None
+    )
+    scalar = scalar_solver.calibrate_groups(groups, distances=[planar_distance()])
+    assert batch.to_dict() == scalar.to_dict()
+
+
+@pytest.mark.parametrize("problem", ["positions", "jacobians", "nan", "complex"])
+def test_calibrator_validates_optional_batch_outputs(problem):
+    class Backend(_StubGeometricBackend):
+        def position_and_geometric_jacobian_batch(self, q, parameters):
+            positions = np.zeros((len(q), 3))
+            jacobians = np.zeros((len(q), 3, 1))
+            if problem == "positions":
+                positions = positions[0]
+            elif problem == "jacobians":
+                jacobians = jacobians[..., 0]
+            elif problem == "nan":
+                jacobians[0, 0, 0] = np.nan
+            elif problem == "complex":
+                positions = positions.astype(complex)
+                positions[0, 0] = 1j
+            return positions, jacobians
+
+    solver = GeometricCalibrator(Backend([GeometricParameter("joint", "x", 1)]))
+    with pytest.raises(ValueError, match="shape|non-finite|real numeric"):
+        solver.calibrate_groups([ContactGroup("a", [[0, 0], [1, 1]])])
+
+
+def test_calibrator_detaches_reused_batch_buffers():
+    class Backend(_StubGeometricBackend):
+        def __init__(self):
+            super().__init__([GeometricParameter("joint", "x", 1)])
+            self.positions = np.zeros((2, 3))
+            self.jacobians = np.zeros((2, 3, 1))
+
+        def position_and_geometric_jacobian_batch(self, q, parameters):
+            self.positions[:, 0] = parameters[0]
+            self.jacobians[:, 0, 0] = parameters[0]
+            return self.positions, self.jacobians
+
+    backend = Backend()
+    solver = GeometricCalibrator(backend)
+    q = np.zeros((2, 2))
+    positions, jacobians = solver._evaluate(q, np.array([1.0]))
+    solver._evaluate(q, np.array([2.0]))
+    np.testing.assert_array_equal(positions[:, 0], 1)
+    np.testing.assert_array_equal(jacobians[:, 0, 0], 1)

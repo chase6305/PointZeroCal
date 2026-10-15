@@ -154,18 +154,17 @@ def load_samples_csv(
                     )
                 row = []
                 for column, cell in enumerate(cells, start=1):
-                    value_location = (
-                        f"{location}, column {column} ({source_names[column - 1]!r})"
-                    )
                     try:
                         value = float(cell)
                     except ValueError as exc:
                         raise ValueError(
-                            f"{value_location}: cannot convert {cell!r} to a number"
+                            f"{location}, column {column} ({source_names[column - 1]!r}): "
+                            f"cannot convert {cell!r} to a number"
                         ) from exc
                     if not math.isfinite(value):
                         raise ValueError(
-                            f"{value_location}: samples must contain only finite values"
+                            f"{location}, column {column} ({source_names[column - 1]!r}): "
+                            "samples must contain only finite values"
                         )
                     row.append(value)
                 rows.append([row[index] for index in order])

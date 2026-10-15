@@ -7,8 +7,10 @@ deviated rpy. Formulas are validated against rebuilt-perturbed-URDF finite
 differences in the test suite.
 """
 
-from collections.abc import Sequence
+from collections.abc import Iterator, Sequence
+from contextlib import contextmanager
 from pathlib import Path
+from typing import Any
 
 import numpy as np
 from numpy.typing import NDArray
@@ -27,6 +29,12 @@ _COMPONENT_AXIS = {
     "yaw": 2,
 }
 _TRANSLATION_COMPONENTS = ("x", "y", "z")
+
+
+def _frame_parent_joint(frame: Any) -> int:
+    """Read the frame's parent joint across Pinocchio 2.x and newer releases."""
+    parent = getattr(frame, "parentJoint", None)
+    return int(frame.parent if parent is None else parent)
 
 
 class PinocchioGeometricKinematics(PinocchioKinematics):
@@ -72,7 +80,9 @@ class PinocchioGeometricKinematics(PinocchioKinematics):
         for index, parameter in enumerate(self._parameters):
             if parameter.joint_name not in urdf_joints:
                 raise ValueError(f"unknown joint name: {parameter.joint_name}")
-            joint_type, parent_link, child_link, rpy, xyz = urdf_joints[parameter.joint_name]
+            joint_type, parent_link, child_link, rpy, xyz = urdf_joints[
+                parameter.joint_name
+            ]
             parent_name = parent_joint.get(parent_link)
             if (
                 joint_type == "fixed"
@@ -137,17 +147,30 @@ class PinocchioGeometricKinematics(PinocchioKinematics):
                     for index, component in entries
                     if (component in _TRANSLATION_COMPONENTS) == translation
                 ]
-                columns.append((
-                    np.array([index for index, _ in selected], dtype=int),
-                    np.array([axis for _, axis in selected], dtype=int),
-                ))
+                columns.append(
+                    (
+                        np.array([index for index, _ in selected], dtype=int),
+                        np.array([axis for _, axis in selected], dtype=int),
+                    )
+                )
             self._derivative_columns[name] = tuple(columns)
+        rotation_groups = [
+            columns[1][0]
+            for name, columns in self._derivative_columns.items()
+            if self._affects_tcp[self._joint_parameters[name][0][0]]
+            and columns[1][0].size
+        ]
+        self._batched_rotation_columns = (
+            np.concatenate(rotation_groups)
+            if len(rotation_groups) > 1
+            else np.empty(0, dtype=int)
+        )
         self._folded_entities = {}
         for name, entries in self._joint_parameters.items():
             kind, entity_id, _ = self._parameter_info[entries[0][0]]
             if kind != "frame":
                 continue
-            parent_id = self.model.frames[entity_id].parentJoint
+            parent_id = _frame_parent_joint(self.model.frames[entity_id])
             joint_ids = tuple(
                 joint_id
                 for joint_id in range(1, self.model.njoints)
@@ -158,9 +181,10 @@ class PinocchioGeometricKinematics(PinocchioKinematics):
             for frame_id, frame in enumerate(self.model.frames):
                 link = (
                     urdf_joints[frame.name][2]
-                    if frame.name in urdf_joints else frame.name
+                    if frame.name in urdf_joints
+                    else frame.name
                 )
-                if frame.parentJoint == parent_id and name in ancestors(link):
+                if _frame_parent_joint(frame) == parent_id and name in ancestors(link):
                     frame_ids.append(frame_id)
             self._folded_entities[name] = joint_ids, tuple(frame_ids)
 
@@ -231,11 +255,63 @@ class PinocchioGeometricKinematics(PinocchioKinematics):
         never leaks state into later evaluations.
         """
         q = self._validate_configuration(configuration)
+        values = self._validate_parameters(parameters)
+        with self._deviated_placements(values) as tangent_axes:
+            return self._evaluate_deviated(q, tangent_axes)
+
+    def position_and_geometric_jacobian_batch(
+        self,
+        configurations: NDArray[np.float64],
+        parameters: NDArray[np.float64],
+    ) -> tuple[NDArray[np.float64], NDArray[np.float64]]:
+        """Evaluate a shared origin deviation at N configurations in radians.
+
+        Input shapes are ``(N, dof)`` and ``(n_parameters,)``, N >= 1.
+        Outputs own their data and have shapes ``(N, 3)`` in metres and
+        ``(N, 3, n_parameters)`` in metres per parameter unit. Placements are
+        prepared once for the entire batch and restored even if FK fails.
+        """
+        q = self._validate_configurations(configurations)
+        values = self._validate_parameters(parameters)
+        positions = np.empty((len(q), 3))
+        jacobians = np.empty((len(q), 3, len(self._parameters)))
+        with self._deviated_placements(values) as tangent_axes:
+            for index, configuration in enumerate(q):
+                positions[index], jacobians[index] = self._evaluate_deviated(
+                    configuration, tangent_axes
+                )
+        return positions, jacobians
+
+    def geometric_position_batch(
+        self,
+        configurations: NDArray[np.float64],
+        parameters: NDArray[np.float64],
+    ) -> NDArray[np.float64]:
+        """Return deviated TCP positions (N, 3) in metres without derivatives.
+
+        Inputs have shapes (N, dof) and (n_parameters,), N >= 1. Prepare one
+        shared deviation and restore model placements even if FK fails.
+        """
+        q = self._validate_configurations(configurations)
+        values = self._validate_parameters(parameters)
+        with self._deviated_placements(values, derivatives=False):
+            return self.position_batch(q)
+
+    def _validate_parameters(
+        self, parameters: NDArray[np.float64]
+    ) -> NDArray[np.float64]:
         values = real_array(parameters, "parameters")
         if values.shape != (len(self._parameters),) or not np.all(np.isfinite(values)):
             raise ValueError(
                 f"parameters must have shape ({len(self._parameters)},) with finite values"
             )
+        return values
+
+    @contextmanager
+    def _deviated_placements(
+        self, values: NDArray[np.float64], *, derivatives: bool = True
+    ) -> Iterator[dict[str, NDArray[np.float64]]]:
+        """Apply one deviation vector and restore all folded model entities."""
         pin = self._pin
         saved_joints = {}
         saved_frames = {}
@@ -269,8 +345,13 @@ class PinocchioGeometricKinematics(PinocchioKinematics):
                         dt[axis] = values[index]
                     else:
                         dr[axis] = values[index]
-                deviated = pin.SE3(pin.rpy.rpyToMatrix(rpy + dr), xyz + dt)
-                tangent_axes[name] = self._rpy_tangent_axes(rpy + dr)
+                if self._derivative_columns[name][1][0].size:
+                    rotation = pin.rpy.rpyToMatrix(rpy + dr)
+                    if derivatives:
+                        tangent_axes[name] = self._rpy_tangent_axes(rpy + dr)
+                else:
+                    rotation = self._origin_placements[name].rotation
+                deviated = pin.SE3(rotation, xyz + dt)
                 # The pinocchio entity placement becomes placement * D where
                 # D = M(0)^{-1} * M(x), exactly matching an exported URDF.
                 delta = self._origin_placements[name].actInv(deviated)
@@ -293,35 +374,54 @@ class PinocchioGeometricKinematics(PinocchioKinematics):
                         self.model.frames[frame_id].placement = (
                             correction * self.model.frames[frame_id].placement
                         )
-            pin.forwardKinematics(self.model, self.data, q)
-            pin.updateFramePlacements(self.model, self.data)
-            pose = self.data.oMf[self.frame_id] * self.tcp_placement
-            position = np.asarray(pose.translation, dtype=float).copy()
-            jacobian = np.empty((3, len(self._parameters)))
-            for name, entries in self._joint_parameters.items():
-                index = entries[0][0]
-                kind, entity_id, parent_frame_id = self._parameter_info[index]
-                translation, rotation = self._derivative_columns[name]
-                translation_indices, translation_axes = translation
-                rotation_indices, rotation_axes = rotation
-                if not self._affects_tcp[index]:
-                    jacobian[:, translation_indices] = 0.0
-                    jacobian[:, rotation_indices] = 0.0
-                    continue
-                if kind == "joint":
-                    anchor = self.data.oMi[entity_id].translation
-                else:
-                    anchor = self.data.oMf[entity_id].translation
-                parent_rotation = self.data.oMf[parent_frame_id].rotation
-                jacobian[:, translation_indices] = parent_rotation[:, translation_axes]
-                if rotation_indices.size:
-                    world_axes = parent_rotation @ tangent_axes[name][:, rotation_axes]
-                    jacobian[:, rotation_indices] = np.cross(
-                        world_axes.T, position - anchor
-                    ).T
-            return position, jacobian
+            yield tangent_axes
         finally:
             for entity_id, placement in saved_joints.items():
                 self.model.jointPlacements[entity_id] = placement
             for entity_id, placement in saved_frames.items():
                 self.model.frames[entity_id].placement = placement
+
+    def _evaluate_deviated(
+        self,
+        q: NDArray[np.float64],
+        tangent_axes: dict[str, NDArray[np.float64]],
+    ) -> tuple[NDArray[np.float64], NDArray[np.float64]]:
+        """Evaluate a validated configuration while deviated origins are active."""
+        pin = self._pin
+        pin.forwardKinematics(self.model, self.data, q)
+        pin.updateFramePlacements(self.model, self.data)
+        pose = self.data.oMf[self.frame_id] * self.tcp_placement
+        position = np.asarray(pose.translation, dtype=float).copy()
+        jacobian = np.empty((3, len(self._parameters)))
+        rotation_columns = self._batched_rotation_columns
+        lever_arms = np.empty_like(jacobian) if rotation_columns.size else None
+        for name, entries in self._joint_parameters.items():
+            index = entries[0][0]
+            kind, entity_id, parent_frame_id = self._parameter_info[index]
+            translation, rotation = self._derivative_columns[name]
+            translation_indices, translation_axes = translation
+            rotation_indices, rotation_axes = rotation
+            if not self._affects_tcp[index]:
+                jacobian[:, translation_indices] = 0.0
+                jacobian[:, rotation_indices] = 0.0
+                continue
+            if kind == "joint":
+                anchor = self.data.oMi[entity_id].translation
+            else:
+                anchor = self.data.oMf[entity_id].translation
+            parent_rotation = self.data.oMf[parent_frame_id].rotation
+            jacobian[:, translation_indices] = parent_rotation[:, translation_axes]
+            if rotation_indices.size:
+                world_axes = parent_rotation @ tangent_axes[name][:, rotation_axes]
+                if lever_arms is None:
+                    jacobian[:, rotation_indices] = np.cross(
+                        world_axes.T, position - anchor
+                    ).T
+                else:
+                    jacobian[:, rotation_indices] = world_axes
+                    lever_arms[:, rotation_indices] = (position - anchor)[:, None]
+        if lever_arms is not None:
+            jacobian[:, rotation_columns] = np.cross(
+                jacobian[:, rotation_columns].T, lever_arms[:, rotation_columns].T
+            ).T
+        return position, jacobian
